@@ -37,11 +37,15 @@ export default function useAuth() {
 
   async function checkRole(u) {
     // Check admin first
-    const { data: admin } = await supabase
+    const { data: admin, error: adminErr } = await supabase
       .from('admin')
-      .select('*')
+      .select('id, nama_lengkap, tingkat_akses, created_at')
       .eq('id', u.id)
       .single();
+
+    if (adminErr && adminErr.code !== 'PGRST116') {
+      console.error('Error checking admin role:', adminErr);
+    }
 
     if (admin) {
       setRole('admin');
@@ -52,17 +56,22 @@ export default function useAuth() {
     }
 
     // Then check siswa
-    const { data: siswa } = await supabase
+    const { data: siswa, error: siswaErr } = await supabase
       .from('siswa')
-      .select('*')
+      .select('id, nama_lengkap, asal_sekolah, created_at, nisn')
       .eq('id', u.id)
       .single();
+
+    if (siswaErr && siswaErr.code !== 'PGRST116') {
+      console.error('Error checking siswa role:', siswaErr);
+    }
 
     if (siswa) {
       setRole('siswa');
       setSiswaData(siswa);
     } else {
-      setRole('siswa'); // default to siswa
+      // No record in either table — don't assume a role
+      setRole(null);
     }
 
     setUser(u);

@@ -8,20 +8,28 @@ export default function Home() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { window.location.href = '/login'; return; }
 
-      // Auto-create siswa profile for Google OAuth users
-      const { data: existing } = await supabase.from('siswa').select('id').eq('id', session.user.id).single();
+      const userId = session.user.id;
+
+      // Check admin FIRST
+      const { data: adminData } = await supabase.from('admin').select('id').eq('id', userId).single();
+      if (adminData) {
+        window.location.href = '/admin/dashboard';
+        return;
+      }
+
+      // Not admin → auto-create siswa profile for Google OAuth users if needed
+      const { data: existing } = await supabase.from('siswa').select('id').eq('id', userId).single();
       if (!existing) {
         const meta = session.user.user_metadata || {};
         await supabase.from('siswa').insert({
-          id: session.user.id,
+          id: userId,
           nama_lengkap: meta.full_name || meta.name || session.user.email?.split('@')[0] || '',
           nisn: '',
           asal_sekolah: '',
         });
       }
 
-      const { data } = await supabase.from('admin').select('id').eq('id', session.user.id).single();
-      window.location.href = data ? '/admin/dashboard' : '/siswa/dashboard';
+      window.location.href = '/siswa/dashboard';
     }
     redirect();
   }, []);

@@ -17,9 +17,11 @@ const KATEGORI_MAP = {
 export default function AdminDashboard() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({ soal: 0, siswa: 0, skor: 0, popup: 0, info: 0, tips: 0 });
+  const [stats, setStats] = useState({ soal: 0, siswa: 0, skor: 0, popup: 0, info: 0, tips: 0, passingGrade: 0 });
   const [recentInfo, setRecentInfo] = useState([]);
   const [recentTips, setRecentTips] = useState([]);
+  const [recentSkor, setRecentSkor] = useState([]);
+  const [soalPerKategori, setSoalPerKategori] = useState({});
 
   useEffect(() => { init(); }, []);
 
@@ -41,8 +43,11 @@ export default function AdminDashboard() {
         { count: popupCount },
         { count: infoCount },
         { count: tipsCount },
+        { count: pgCount },
         { data: infoData },
         { data: tipsData },
+        { data: skorData },
+        { data: soalKategoriData },
       ] = await Promise.all([
         supabase.from('soal').select('*', { count: 'exact', head: true }),
         supabase.from('siswa').select('*', { count: 'exact', head: true }),
@@ -50,15 +55,27 @@ export default function AdminDashboard() {
         supabase.from('popup').select('*', { count: 'exact', head: true }),
         supabase.from('info').select('*', { count: 'exact', head: true }),
         supabase.from('tips').select('*', { count: 'exact', head: true }),
+        supabase.from('passing_grade').select('*', { count: 'exact', head: true }),
         supabase.from('info').select('*').order('created_at', { ascending: false }).limit(3),
         supabase.from('tips').select('*').order('created_at', { ascending: false }).limit(3),
+        supabase.from('skor').select('id, siswa_id, nama_peserta, total_skor, created_at').order('created_at', { ascending: false }).limit(5),
+        supabase.from('soal').select('kategori'),
       ]);
       setStats({
         soal: soalCount || 0, siswa: siswaCount || 0, skor: skorCount || 0,
         popup: popupCount || 0, info: infoCount || 0, tips: tipsCount || 0,
+        passingGrade: pgCount || 0,
       });
       setRecentInfo(infoData || []);
       setRecentTips(tipsData || []);
+      setRecentSkor(skorData || []);
+
+      // Hitung soal per kategori
+      const katCounts = {};
+      (soalKategoriData || []).forEach(s => {
+        katCounts[s.kategori] = (katCounts[s.kategori] || 0) + 1;
+      });
+      setSoalPerKategori(katCounts);
     } catch (e) {
       console.error(e);
     }
@@ -75,9 +92,10 @@ export default function AdminDashboard() {
   }
 
   const quickLinks = [
-    { href: '/admin/popup', label: 'Kelola Pop-up', emoji: '📢', desc: 'Atur pop-up untuk siswa', color: 'var(--brand-primary-subtle)' },
-    { href: '/admin/info', label: 'Kirim Info', emoji: '📣', desc: 'Broadcast pengumuman', color: 'var(--success-subtle)' },
+    { href: '/admin/siswa', label: 'Monitoring Siswa', emoji: '👥', desc: 'Pantau data & skor siswa', color: 'var(--success-subtle)' },
     { href: '/admin/soal', label: 'Bank Soal', emoji: '📝', desc: 'Tambah & kelola soal TO', color: 'var(--warning-subtle)' },
+    { href: '/admin/popup', label: 'Kelola Pop-up', emoji: '📢', desc: 'Atur pop-up untuk siswa', color: 'var(--brand-primary-subtle)' },
+    { href: '/admin/info', label: 'Kirim Info', emoji: '📣', desc: 'Broadcast pengumuman', color: 'var(--info-subtle)' },
     { href: '/admin/tips', label: 'Tips Belajar', emoji: '💡', desc: 'Tips & trik belajar', color: 'var(--info-subtle)' },
     { href: '/admin/passing-grade', label: 'Passing Grade', emoji: '🎯', desc: 'Skor minimal per jurusan', color: 'var(--danger-subtle)' },
   ];
@@ -137,8 +155,51 @@ export default function AdminDashboard() {
           ))}
         </div>
 
+        {/* Distribusi Soal per Kategori */}
+        {Object.keys(soalPerKategori).length > 0 && (
+          <div className="card" style={{ marginTop: 8, marginBottom: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700 }}>📊 Distribusi Soal per Subtest</h3>
+              <Link href="/admin/soal" className="btn btn-sm btn-ghost">Kelola Soal →</Link>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 }}>
+              {Object.entries(KATEGORI_MAP).map(([key, label]) => (
+                <div key={key} style={{ background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', padding: '12px 14px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--brand-primary)' }}>{soalPerKategori[key] || 0}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, marginTop: 2 }}>{key}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Recent Activity */}
         <div className="admin-recent-grid">
+          {/* Recent Skor / Tryout */}
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700 }}>📊 Tryout Terbaru</h3>
+              <Link href="/admin/siswa" className="btn btn-sm btn-ghost">Lihat Semua →</Link>
+            </div>
+            {recentSkor.length === 0 ? (
+              <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>Belum ada siswa yang mengerjakan tryout.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {recentSkor.map(item => (
+                  <div key={item.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{item.nama_peserta || 'Anonim'}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{formatDate(item.created_at)}</div>
+                    </div>
+                    <div style={{ fontSize: 20, fontWeight: 800, color: item.total_skor >= 700 ? 'var(--success)' : item.total_skor >= 400 ? 'var(--warning)' : 'var(--danger)' }}>
+                      {Math.round(item.total_skor || 0)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Recent Info */}
           <div className="card">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>

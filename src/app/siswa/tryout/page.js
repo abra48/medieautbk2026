@@ -5,218 +5,277 @@ import useAuth from '@/hooks/useAuth';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Suspense } from 'react';
 
-const KATEGORI_MAP = {
-  PU: { name: 'Penalaran Umum', duration: 30 },
-  PBM: { name: 'Pemahaman Bacaan & Menulis', duration: 25 },
-  PPU: { name: 'Pengetahuan & Pemahaman Umum', duration: 20 },
-  PK: { name: 'Pengetahuan Kuantitatif', duration: 35 },
-  LIT_INDO: { name: 'Literasi Bahasa Indonesia', duration: 25 },
-  LIT_ING: { name: 'Literasi Bahasa Inggris', duration: 25 },
-  PM: { name: 'Penalaran Matematika', duration: 30 },
-};
+// UTBK subtest order — matches real SNBT 2026
+const SUBTEST_ORDER = [
+  { key: 'LIT_INDO', name: 'Literasi Bahasa Indonesia', icon: '🇮🇩', duration: 25, color: '#f59e0b' },
+  { key: 'LIT_ING', name: 'Literasi Bahasa Inggris', icon: '🇬🇧', duration: 25, color: '#ec4899' },
+  { key: 'PM', name: 'Penalaran Matematika', icon: '📐', duration: 30, color: '#ef4444' },
+  { key: 'PU', name: 'Penalaran Umum', icon: '🧠', duration: 30, color: '#3b82f6' },
+  { key: 'PBM', name: 'Pemahaman Bacaan & Menulis', icon: '📖', duration: 25, color: '#8b5cf6' },
+  { key: 'PPU', name: 'Pengetahuan & Pemahaman Umum', icon: '🌍', duration: 20, color: '#06b6d4' },
+  { key: 'PK', name: 'Pengetahuan Kuantitatif', icon: '🔢', duration: 35, color: '#10b981' },
+];
 
 function TryoutContent() {
   const { user, loading: authLoading, siswaData } = useAuth();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const subtest = searchParams.get('subtest') || 'PU';
-  const subtestInfo = KATEGORI_MAP[subtest] || KATEGORI_MAP.PU;
 
   // States
-  const [soalList, setSoalList] = useState([]);
+  const [allSoal, setAllSoal] = useState({}); // { PU: [...], PBM: [...], ... }
   const [loading, setLoading] = useState(true);
-  const [currentIdx, setCurrentIdx] = useState(0);
-  const [answers, setAnswers] = useState({});
+  const [currentSubtestIdx, setCurrentSubtestIdx] = useState(0);
+  const [currentSoalIdx, setCurrentSoalIdx] = useState(0);
+  const [answers, setAnswers] = useState({}); // { 'PU_0': 'A', ... }
   const [flags, setFlags] = useState({});
-  const [timeLeft, setTimeLeft] = useState(subtestInfo.duration * 60);
-  const [phase, setPhase] = useState('exam'); // 'exam' | 'confirm' | 'result'
-  const [showNav, setShowNav] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(0);
+  const [phase, setPhase] = useState('intro'); // 'intro' | 'exam' | 'subtestDone' | 'result'
   const timerRef = useRef(null);
   const startTimeRef = useRef(null);
 
-  // Fetch soal
+  // MathJax re-typeset
   useEffect(() => {
-    if (!user) return;
-    fetchSoal();
-  }, [user]);
-
-  async function fetchSoal() {
-    const { data } = await supabase
-      .from('soal')
-      .select('*')
-      .eq('kategori', subtest)
-      .order('created_at');
-    setSoalList(data || []);
-    setLoading(false);
-    startTimeRef.current = Date.now();
-  }
-
-  // Timer
-  useEffect(() => {
-    if (phase !== 'exam' || loading || soalList.length === 0) return;
-    timerRef.current = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current);
-          handleSubmit(true);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timerRef.current);
-  }, [phase, loading, soalList.length]);
+    function tryTypeset(retries = 0) {
+      if (typeof window === 'undefined') return;
+      if (window.MathJax && window.MathJax.typesetPromise) {
+        window.MathJax.typesetPromise().catch(() => {});
+      } else if (retries < 30) {
+        setTimeout(() => tryTypeset(retries + 1), 300);
+      }
+    }
+    const t = setTimeout(() => tryTypeset(), 200);
+    return () => clearTimeout(t);
+  }, [currentSoalIdx, currentSubtestIdx, phase, loading]);
 
   // Auth redirect
   useEffect(() => {
     if (!authLoading && !user) router.push('/login');
   }, [authLoading, user]);
 
-  function formatTime(seconds) {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  }
-
-  function selectAnswer(label) {
-    setAnswers({ ...answers, [currentIdx]: label });
-  }
-
-  function toggleFlag() {
-    setFlags({ ...flags, [currentIdx]: !flags[currentIdx] });
-  }
-
-  function goToSoal(idx) {
-    setCurrentIdx(idx);
-    setShowNav(false);
-  }
-
-  const handleSubmit = useCallback(async (autoSubmit = false) => {
-    if (!autoSubmit && phase === 'exam') {
-      setPhase('confirm');
-      clearInterval(timerRef.current);
-      return;
-    }
-
-    setPhase('result');
-    clearInterval(timerRef.current);
-
-    // Calculate score
-    let correct = 0;
-    soalList.forEach((soal, idx) => {
-      if (answers[idx] === soal.kunci_jawaban) correct++;
-    });
-
-    const totalSkor = soalList.length > 0 ? Math.round((correct / soalList.length) * 1000) : 0;
-    const elapsedMinutes = Math.round((Date.now() - startTimeRef.current) / 60000);
-
-    // Save score
-    if (user) {
-      await supabase.from('skor').insert({
-        siswa_id: user.id,
-        nama_peserta: siswaData?.nama_lengkap || user.email?.split('@')[0] || 'Anonim',
-        total_skor: totalSkor,
-        detail_subtest: { [subtest]: totalSkor },
+  // Fetch ALL soal grouped by kategori
+  useEffect(() => {
+    if (!user) return;
+    async function fetchAll() {
+      const { data } = await supabase.from('soal').select('*').order('created_at');
+      const grouped = {};
+      SUBTEST_ORDER.forEach(s => { grouped[s.key] = []; });
+      (data || []).forEach(soal => {
+        if (grouped[soal.kategori]) grouped[soal.kategori].push(soal);
       });
+      setAllSoal(grouped);
+      setLoading(false);
     }
-  }, [phase, soalList, answers, user, siswaData, subtest]);
+    fetchAll();
+  }, [user]);
 
-  function cancelSubmit() {
-    setPhase('exam');
-    // Restart timer from where it was
+  const currentSubtest = SUBTEST_ORDER[currentSubtestIdx];
+  const currentSoalList = allSoal[currentSubtest?.key] || [];
+  const currentSoal = currentSoalList[currentSoalIdx];
+  const ansKey = (sub, idx) => `${sub}_${idx}`;
+
+  // Timer for current subtest
+  useEffect(() => {
+    if (phase !== 'exam' || !currentSubtest) return;
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
         if (prev <= 1) {
           clearInterval(timerRef.current);
-          handleSubmit(true);
+          finishSubtest();
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
+    return () => clearInterval(timerRef.current);
+  }, [phase, currentSubtestIdx]);
+
+  function startSubtest() {
+    setCurrentSoalIdx(0);
+    setTimeLeft(currentSubtest.duration * 60);
+    setPhase('exam');
+    startTimeRef.current = Date.now();
   }
 
-  // Loading state
+  function finishSubtest() {
+    clearInterval(timerRef.current);
+    if (currentSubtestIdx < SUBTEST_ORDER.length - 1) {
+      setPhase('subtestDone');
+    } else {
+      submitAll();
+    }
+  }
+
+  function nextSubtest() {
+    setCurrentSubtestIdx(prev => prev + 1);
+    setCurrentSoalIdx(0);
+    setPhase('intro');
+  }
+
+  const submitAll = useCallback(async () => {
+    clearInterval(timerRef.current);
+    setPhase('result');
+
+    // Calculate scores per subtest
+    const subtestScores = {};
+    let totalCorrect = 0;
+    let totalSoal = 0;
+
+    SUBTEST_ORDER.forEach(sub => {
+      const soalList = allSoal[sub.key] || [];
+      let correct = 0;
+      soalList.forEach((soal, idx) => {
+        if (answers[ansKey(sub.key, idx)] === soal.kunci_jawaban) correct++;
+      });
+      subtestScores[sub.key] = soalList.length > 0 ? Math.round((correct / soalList.length) * 1000) : 0;
+      totalCorrect += correct;
+      totalSoal += soalList.length;
+    });
+
+    const totalSkor = totalSoal > 0 ? Math.round((totalCorrect / totalSoal) * 1000) : 0;
+
+    if (user) {
+      await supabase.from('skor').insert({
+        siswa_id: user.id,
+        nama_peserta: siswaData?.nama_lengkap || user.email?.split('@')[0] || 'Anonim',
+        total_skor: totalSkor,
+        detail_subtest: subtestScores,
+      });
+    }
+  }, [allSoal, answers, user, siswaData]);
+
+  function selectAnswer(label) {
+    setAnswers({ ...answers, [ansKey(currentSubtest.key, currentSoalIdx)]: label });
+  }
+
+  function toggleFlag() {
+    const k = ansKey(currentSubtest.key, currentSoalIdx);
+    setFlags({ ...flags, [k]: !flags[k] });
+  }
+
+  function formatTime(s) {
+    return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  // Loading
   if (authLoading || loading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }}>
         <div className="spinner" />
-        <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>Memuat soal {subtestInfo.name}...</p>
+        <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>Memuat soal simulasi UTBK...</p>
       </div>
     );
   }
 
-  // No soal
-  if (soalList.length === 0) {
+  // ===================== INTRO SCREEN =====================
+  if (phase === 'intro') {
+    const soalCount = currentSoalList.length;
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24 }}>
-        <div style={{ fontSize: 48 }}>📋</div>
-        <h2 style={{ fontSize: 20, fontWeight: 700 }}>Belum ada soal</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>Admin belum menambahkan soal untuk subtest {subtestInfo.name}.</p>
-        <button className="btn btn-primary" onClick={() => router.push('/siswa/dashboard')}>← Kembali</button>
-      </div>
-    );
-  }
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'var(--bg-body)' }}>
+        <div className="card animate-slideUp" style={{ maxWidth: 520, width: '100%', textAlign: 'center', padding: 40 }}>
+          {/* Progress dots */}
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginBottom: 24 }}>
+            {SUBTEST_ORDER.map((s, i) => (
+              <div key={s.key} style={{
+                width: 10, height: 10, borderRadius: '50%',
+                background: i < currentSubtestIdx ? 'var(--success)' : i === currentSubtestIdx ? currentSubtest.color : 'var(--border)',
+                transition: 'all 300ms',
+              }} />
+            ))}
+          </div>
 
-  const currentSoal = soalList[currentIdx];
-  const answeredCount = Object.keys(answers).length;
-  const flaggedCount = Object.values(flags).filter(Boolean).length;
-  const timerClass = timeLeft <= 60 ? 'danger' : timeLeft <= 300 ? 'warning' : '';
-
-  // === CONFIRM SCREEN ===
-  if (phase === 'confirm') {
-    const unanswered = soalList.length - answeredCount;
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-        <div className="card animate-slideUp" style={{ maxWidth: 480, width: '100%', textAlign: 'center', padding: 40 }}>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>📋</div>
-          <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>Kumpulkan Jawaban?</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: 14, marginBottom: 24 }}>
-            Pastikan kamu sudah yakin dengan semua jawabanmu.
+          <div style={{ fontSize: 48, marginBottom: 16 }}>{currentSubtest.icon}</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+            Subtest {currentSubtestIdx + 1} dari {SUBTEST_ORDER.length}
+          </div>
+          <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 8, color: 'var(--text-primary)' }}>{currentSubtest.name}</h2>
+          <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 28, lineHeight: 1.7 }}>
+            {soalCount > 0
+              ? `${soalCount} soal • Waktu: ${currentSubtest.duration} menit. Timer akan berjalan otomatis setelah kamu menekan "Mulai".`
+              : 'Belum ada soal untuk subtest ini. Klik tombol di bawah untuk lompat ke subtest berikutnya.'
+            }
           </p>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 28 }}>
-            <div style={{ background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', padding: 14 }}>
-              <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--success)' }}>{answeredCount}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Dijawab</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 24 }}>
+            <div style={{ background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', padding: 14, textAlign: 'center' }}>
+              <div style={{ fontSize: 22, fontWeight: 800, color: currentSubtest.color }}>{soalCount}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Jumlah Soal</div>
             </div>
-            <div style={{ background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', padding: 14 }}>
-              <div style={{ fontSize: 22, fontWeight: 800, color: unanswered > 0 ? 'var(--warning)' : 'var(--text-muted)' }}>{unanswered}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Belum</div>
-            </div>
-            <div style={{ background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', padding: 14 }}>
-              <div style={{ fontSize: 22, fontWeight: 800, color: flaggedCount > 0 ? 'var(--warning)' : 'var(--text-muted)' }}>{flaggedCount}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Ditandai</div>
+            <div style={{ background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', padding: 14, textAlign: 'center' }}>
+              <div style={{ fontSize: 22, fontWeight: 800, color: currentSubtest.color }}>{currentSubtest.duration}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Menit</div>
             </div>
           </div>
 
-          {unanswered > 0 && (
-            <div className="alert alert-warning" style={{ justifyContent: 'center', marginBottom: 20 }}>
-              ⚠️ Masih ada {unanswered} soal belum dijawab!
-            </div>
-          )}
-
           <div style={{ display: 'flex', gap: 12 }}>
-            <button className="btn btn-outline" style={{ flex: 1 }} onClick={cancelSubmit}>
-              ← Kembali
+            <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => router.push('/siswa/dashboard')}>
+              ← Keluar
             </button>
-            <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => handleSubmit(true)}>
-              Kumpulkan ✓
-            </button>
+            {soalCount > 0 ? (
+              <button className="btn btn-primary" style={{ flex: 1, background: currentSubtest.color }} onClick={startSubtest}>
+                Mulai Subtest →
+              </button>
+            ) : (
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={currentSubtestIdx < SUBTEST_ORDER.length - 1 ? nextSubtest : submitAll}>
+                {currentSubtestIdx < SUBTEST_ORDER.length - 1 ? 'Subtest Berikutnya →' : 'Lihat Hasil'}
+              </button>
+            )}
           </div>
         </div>
       </div>
     );
   }
 
-  // === RESULT SCREEN ===
+  // ===================== SUBTEST DONE SCREEN =====================
+  if (phase === 'subtestDone') {
+    const soalList = currentSoalList;
+    let answered = 0;
+    soalList.forEach((_, idx) => { if (answers[ansKey(currentSubtest.key, idx)]) answered++; });
+    const nextSub = SUBTEST_ORDER[currentSubtestIdx + 1];
+
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'var(--bg-body)' }}>
+        <div className="card animate-slideUp" style={{ maxWidth: 480, width: '100%', textAlign: 'center', padding: 40 }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
+          <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 8, color: 'var(--text-primary)' }}>
+            {currentSubtest.name} Selesai!
+          </h2>
+          <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 24 }}>
+            Dijawab: {answered}/{soalList.length} soal
+          </p>
+
+          {nextSub && (
+            <div style={{ background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', padding: 16, marginBottom: 20 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>Subtest berikutnya</div>
+              <div style={{ fontSize: 28 }}>{nextSub.icon}</div>
+              <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginTop: 4 }}>{nextSub.name}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{(allSoal[nextSub.key] || []).length} soal • {nextSub.duration} menit</div>
+            </div>
+          )}
+
+          <button className="btn btn-primary" style={{ width: '100%' }} onClick={nextSubtest}>
+            Lanjut ke {nextSub?.name || 'Hasil'} →
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ===================== RESULT SCREEN =====================
   if (phase === 'result') {
-    let correct = 0;
-    soalList.forEach((soal, idx) => {
-      if (answers[idx] === soal.kunci_jawaban) correct++;
+    let totalCorrect = 0, totalCount = 0;
+    const details = SUBTEST_ORDER.map(sub => {
+      const soalList = allSoal[sub.key] || [];
+      let correct = 0;
+      soalList.forEach((soal, idx) => {
+        if (answers[ansKey(sub.key, idx)] === soal.kunci_jawaban) correct++;
+      });
+      totalCorrect += correct;
+      totalCount += soalList.length;
+      const score = soalList.length > 0 ? Math.round((correct / soalList.length) * 1000) : 0;
+      return { ...sub, correct, total: soalList.length, score };
     });
-    const totalSkor = soalList.length > 0 ? Math.round((correct / soalList.length) * 1000) : 0;
-    const percentage = soalList.length > 0 ? Math.round((correct / soalList.length) * 100) : 0;
+    const totalSkor = totalCount > 0 ? Math.round((totalCorrect / totalCount) * 1000) : 0;
+    const pct = totalCount > 0 ? Math.round((totalCorrect / totalCount) * 100) : 0;
 
     let verdict, verdictColor;
     if (totalSkor >= 700) { verdict = '🌟 Luar Biasa!'; verdictColor = 'var(--success)'; }
@@ -225,265 +284,150 @@ function TryoutContent() {
     else { verdict = '💪 Perlu Latihan'; verdictColor = 'var(--danger)'; }
 
     return (
-      <div style={{ minHeight: '100vh', padding: 24 }}>
-        <div className="container-xl" style={{ maxWidth: 800 }}>
-          {/* Score Summary */}
+      <div style={{ minHeight: '100vh', padding: 24, background: 'var(--bg-body)' }}>
+        <div style={{ maxWidth: 700, margin: '0 auto' }}>
           <div className="card animate-slideUp" style={{ textAlign: 'center', padding: 40, marginBottom: 24 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
-              Hasil — {subtestInfo.name}
+              Hasil Simulasi UTBK/SNBT
             </div>
-            <div style={{ fontSize: 56, fontWeight: 800, color: verdictColor, lineHeight: 1.1, marginBottom: 8 }}>
-              {totalSkor}
-            </div>
+            <div style={{ fontSize: 56, fontWeight: 800, color: verdictColor, lineHeight: 1.1, marginBottom: 8 }}>{totalSkor}</div>
             <div style={{ fontSize: 18, fontWeight: 700, color: verdictColor, marginBottom: 16 }}>{verdict}</div>
-
-            <div style={{ display: 'flex', justifyContent: 'center', gap: 32, marginBottom: 24 }}>
-              <div><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--success)' }}>{correct}</div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Benar</div></div>
-              <div><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--danger)' }}>{soalList.length - correct}</div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Salah</div></div>
-              <div><div style={{ fontSize: 22, fontWeight: 800 }}>{percentage}%</div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Akurasi</div></div>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 32, marginBottom: 20 }}>
+              <div><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--success)' }}>{totalCorrect}</div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Benar</div></div>
+              <div><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--danger)' }}>{totalCount - totalCorrect}</div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Salah</div></div>
+              <div><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)' }}>{pct}%</div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Akurasi</div></div>
             </div>
-
-            <div className="progress-bar" style={{ height: 8, maxWidth: 300, margin: '0 auto 24px' }}>
-              <div className="progress-bar-fill" style={{ width: `${percentage}%`, background: percentage >= 70 ? 'var(--success)' : percentage >= 50 ? 'var(--warning)' : 'var(--danger)' }} />
-            </div>
-
             <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-              <button className="btn btn-primary" onClick={() => router.push('/siswa/dashboard')}>
-                ← Kembali ke Dashboard
-              </button>
-              <button className="btn btn-outline" onClick={() => router.push('/skor')}>
-                📈 Lihat Riwayat
-              </button>
+              <button className="btn btn-primary" onClick={() => router.push('/siswa/dashboard')}>← Dashboard</button>
+              <button className="btn btn-outline" onClick={() => router.push('/skor')}>📈 Riwayat</button>
             </div>
           </div>
 
-          {/* Pembahasan per soal */}
-          <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>Pembahasan Soal</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {soalList.map((soal, idx) => {
-              const userAns = answers[idx];
-              const isCorrect = userAns === soal.kunci_jawaban;
-              return (
-                <div key={soal.id} className="card" style={{ padding: 20 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-                    <span className={`badge ${isCorrect ? 'badge-green' : 'badge-red'}`}>
-                      {isCorrect ? '✓ Benar' : '✕ Salah'}
-                    </span>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-muted)' }}>Soal {idx + 1}</span>
-                  </div>
-                  <p style={{ fontSize: 14, color: 'var(--text-primary)', lineHeight: 1.7, marginBottom: 12 }}>{soal.teks_soal}</p>
-                  {soal.gambar_soal && <img src={soal.gambar_soal} alt="" style={{ maxWidth: '100%', borderRadius: 'var(--radius-md)', marginBottom: 12, border: '1px solid var(--border)' }} />}
-                  
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
-                    {['A', 'B', 'C', 'D', 'E'].map(l => {
-                      const opsi = soal[`opsi_${l.toLowerCase()}`];
-                      if (!opsi) return null;
-                      const isKey = l === soal.kunci_jawaban;
-                      const isUser = l === userAns;
-                      const isWrongUser = isUser && !isKey;
-                      return (
-                        <div key={l} className={`answer-option ${isKey ? 'correct' : isWrongUser ? 'wrong' : ''}`} style={{ cursor: 'default', padding: '10px 14px' }}>
-                          <span className="answer-option-label" style={{ width: 28, height: 28, fontSize: 11 }}>{l}</span>
-                          <span style={{ fontSize: 13 }}>{opsi}</span>
-                          {isKey && <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: 'var(--success)' }}>✓ Kunci</span>}
-                          {isWrongUser && <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: 'var(--danger)' }}>Jawabanmu</span>}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {soal.pembahasan && (
-                    <div style={{ background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', padding: 14, border: '1px solid var(--border)' }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--success)', textTransform: 'uppercase', marginBottom: 6 }}>💡 Pembahasan</div>
-                      <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>{soal.pembahasan}</p>
-                    </div>
-                  )}
+          {/* Per-subtest breakdown */}
+          <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>Skor per Subtest</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {details.map(d => (
+              <div key={d.key} className="card" style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ fontSize: 28 }}>{d.icon}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>{d.name}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{d.correct}/{d.total} benar</div>
                 </div>
-              );
-            })}
+                <div style={{ fontSize: 24, fontWeight: 800, color: d.score >= 700 ? 'var(--success)' : d.score >= 400 ? 'var(--warning)' : 'var(--danger)' }}>
+                  {d.score}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
     );
   }
 
-  // === EXAM SCREEN ===
+  // ===================== EXAM SCREEN =====================
+  if (!currentSoal) return null;
+
+  const timerClass = timeLeft <= 60 ? 'danger' : timeLeft <= 300 ? 'warning' : '';
+  const answeredInSubtest = currentSoalList.filter((_, idx) => answers[ansKey(currentSubtest.key, idx)]).length;
+
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      {/* Exam Header */}
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-body)' }}>
+      {/* Header */}
       <header style={{
         background: 'var(--bg-surface)', borderBottom: '1px solid var(--border)',
-        padding: '0 20px', height: 60, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 20px', height: 56, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         position: 'sticky', top: 0, zIndex: 30,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span className="badge badge-blue">{subtestInfo.name}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="badge" style={{ background: `${currentSubtest.color}20`, color: currentSubtest.color, fontWeight: 700 }}>
+            {currentSubtest.icon} {currentSubtest.name}
+          </span>
           <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            Soal {currentIdx + 1} / {soalList.length}
+            {currentSoalIdx + 1}/{currentSoalList.length}
           </span>
         </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div className={`tryout-timer ${timerClass}`}>
-            ⏱ {formatTime(timeLeft)}
-          </div>
-          <button
-            className="btn btn-sm btn-outline"
-            onClick={() => setShowNav(!showNav)}
-            style={{ display: 'none' }}
-            id="mobile-nav-toggle"
-          >
-            ≡
-          </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div className={`tryout-timer ${timerClass}`}>⏱ {formatTime(timeLeft)}</div>
+          <button className="btn btn-sm btn-outline" onClick={finishSubtest}>Kumpulkan</button>
         </div>
       </header>
 
-      {/* Main Exam Area */}
+      {/* Content */}
       <div style={{ flex: 1, display: 'flex' }}>
-        {/* Soal Content */}
-        <div style={{ flex: 1, padding: '28px 32px', maxWidth: 800, margin: '0 auto', width: '100%' }}>
-          {/* Soal Text */}
-          <div className="animate-fadeIn" key={currentIdx}>
-            <div style={{ fontSize: 16, color: 'var(--text-primary)', lineHeight: 1.8, marginBottom: 20 }}>
-              {currentSoal.teks_soal}
-            </div>
+        {/* Soal panel */}
+        <div style={{ flex: 1, padding: '24px 28px', maxWidth: 800, margin: '0 auto', width: '100%', overflowY: 'auto' }}>
+          <div className="animate-fadeIn" key={`${currentSubtestIdx}_${currentSoalIdx}`}>
+            {/* Soal text */}
+            <div className="soal-html-content" style={{ fontSize: 16, lineHeight: 1.8, marginBottom: 20, color: 'var(--text-primary)' }}
+              dangerouslySetInnerHTML={{ __html: currentSoal.teks_soal }} />
 
             {currentSoal.gambar_soal && (
-              <img src={currentSoal.gambar_soal} alt="Soal" style={{ maxWidth: '100%', borderRadius: 'var(--radius-md)', marginBottom: 20, border: '1px solid var(--border)' }} />
+              <img src={currentSoal.gambar_soal} alt="" style={{ maxWidth: '100%', borderRadius: 'var(--radius-md)', marginBottom: 20, border: '1px solid var(--border)' }} />
             )}
 
-            {/* Answer Options */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
+            {/* Options */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
               {['A', 'B', 'C', 'D', 'E'].map(l => {
                 const opsi = currentSoal[`opsi_${l.toLowerCase()}`];
                 if (!opsi) return null;
-                const isSelected = answers[currentIdx] === l;
+                const selected = answers[ansKey(currentSubtest.key, currentSoalIdx)] === l;
                 return (
-                  <button
-                    key={l}
-                    className={`answer-option ${isSelected ? 'selected' : ''}`}
-                    onClick={() => selectAnswer(l)}
-                  >
+                  <button key={l} className={`answer-option ${selected ? 'selected' : ''}`} onClick={() => selectAnswer(l)}>
                     <span className="answer-option-label">{l}</span>
-                    <span>{opsi}</span>
+                    <span className="soal-html-content" dangerouslySetInnerHTML={{ __html: opsi }} />
                   </button>
                 );
               })}
             </div>
 
-            {/* Navigation Buttons */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+            {/* Nav buttons */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button
-                  className="btn btn-outline"
-                  disabled={currentIdx === 0}
-                  onClick={() => setCurrentIdx(currentIdx - 1)}
-                >
-                  ← Sebelumnya
-                </button>
-                <button
-                  className="btn btn-outline"
-                  disabled={currentIdx === soalList.length - 1}
-                  onClick={() => setCurrentIdx(currentIdx + 1)}
-                >
-                  Selanjutnya →
-                </button>
+                <button className="btn btn-outline" disabled={currentSoalIdx === 0} onClick={() => setCurrentSoalIdx(i => i - 1)}>← Sebelumnya</button>
+                <button className="btn btn-outline" disabled={currentSoalIdx === currentSoalList.length - 1} onClick={() => setCurrentSoalIdx(i => i + 1)}>Selanjutnya →</button>
               </div>
-
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button
-                  className={`btn btn-sm ${flags[currentIdx] ? 'btn-success' : 'btn-outline'}`}
-                  onClick={toggleFlag}
-                  title="Tandai soal ini"
-                >
-                  🚩 {flags[currentIdx] ? 'Ditandai' : 'Tandai'}
-                </button>
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={() => handleSubmit(false)}
-                >
-                  Kumpulkan
-                </button>
-              </div>
+              <button className={`btn btn-sm ${flags[ansKey(currentSubtest.key, currentSoalIdx)] ? 'btn-success' : 'btn-outline'}`} onClick={toggleFlag}>
+                🚩 {flags[ansKey(currentSubtest.key, currentSoalIdx)] ? 'Ditandai' : 'Tandai'}
+              </button>
             </div>
           </div>
         </div>
 
-        {/* Navigation Sidebar */}
-        <aside style={{
-          width: 240, background: 'var(--bg-surface)', borderLeft: '1px solid var(--border)',
-          padding: 20, display: 'flex', flexDirection: 'column', gap: 16,
-          position: 'sticky', top: 60, height: 'calc(100vh - 60px)', overflowY: 'auto',
+        {/* Nav sidebar */}
+        <aside className="tryout-aside" style={{
+          width: 220, background: 'var(--bg-surface)', borderLeft: '1px solid var(--border)',
+          padding: 16, display: 'flex', flexDirection: 'column', gap: 14,
+          position: 'sticky', top: 56, height: 'calc(100vh - 56px)', overflowY: 'auto',
         }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-            Navigasi Soal
-          </div>
-
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Navigasi</div>
           <div className="soal-nav-grid">
-            {soalList.map((_, idx) => {
+            {currentSoalList.map((_, idx) => {
               let cls = '';
-              if (idx === currentIdx) cls = 'current';
-              else if (answers[idx]) cls = 'answered';
-              if (flags[idx]) cls += ' flagged';
-              return (
-                <button
-                  key={idx}
-                  className={`soal-nav-btn ${cls}`}
-                  onClick={() => goToSoal(idx)}
-                >
-                  {idx + 1}
-                </button>
-              );
+              if (idx === currentSoalIdx) cls = 'current';
+              else if (answers[ansKey(currentSubtest.key, idx)]) cls = 'answered';
+              if (flags[ansKey(currentSubtest.key, idx)]) cls += ' flagged';
+              return <button key={idx} className={`soal-nav-btn ${cls}`} onClick={() => setCurrentSoalIdx(idx)}>{idx + 1}</button>;
             })}
           </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{answeredInSubtest}/{currentSoalList.length} dijawab</div>
+          <div className="progress-bar"><div className="progress-bar-fill" style={{ width: `${(answeredInSubtest / currentSoalList.length) * 100}%` }} /></div>
 
-          {/* Legend */}
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ width: 14, height: 14, borderRadius: 4, background: 'var(--brand-primary)' }} />
-              Soal saat ini
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ width: 14, height: 14, borderRadius: 4, background: 'var(--success-subtle)', border: '1px solid rgba(16,185,129,0.3)' }} />
-              Sudah dijawab
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ width: 14, height: 14, borderRadius: 4, background: 'var(--warning-subtle)', border: '1px solid rgba(245,158,11,0.3)' }} />
-              Ditandai
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ width: 14, height: 14, borderRadius: 4, background: 'var(--bg-input)', border: '1px solid var(--border)' }} />
-              Belum dijawab
-            </div>
-          </div>
-
-          {/* Summary */}
-          <div style={{ marginTop: 'auto', borderTop: '1px solid var(--border)', paddingTop: 14 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span style={{ color: 'var(--text-muted)' }}>Dijawab</span>
-              <span style={{ fontWeight: 700, color: 'var(--success)' }}>{answeredCount}/{soalList.length}</span>
-            </div>
-            <div className="progress-bar">
-              <div className="progress-bar-fill" style={{ width: `${(answeredCount / soalList.length) * 100}%` }} />
-            </div>
-            {flaggedCount > 0 && (
-              <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 8 }}>
-                🚩 {flaggedCount} soal ditandai
+          {/* Subtest progress */}
+          <div style={{ marginTop: 'auto', borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>Progress Simulasi</div>
+            {SUBTEST_ORDER.map((s, i) => (
+              <div key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: i === currentSubtestIdx ? currentSubtest.color : 'var(--text-muted)', fontWeight: i === currentSubtestIdx ? 700 : 400, marginBottom: 4 }}>
+                <span>{i < currentSubtestIdx ? '✅' : i === currentSubtestIdx ? '▶' : '○'}</span>
+                <span>{s.name}</span>
               </div>
-            )}
+            ))}
           </div>
         </aside>
       </div>
 
-      {/* Mobile Nav Toggle CSS */}
       <style jsx>{`
         @media (max-width: 768px) {
-          aside {
-            display: none !important;
-          }
-          #mobile-nav-toggle {
-            display: flex !important;
-          }
+          .tryout-aside { display: none !important; }
         }
       `}</style>
     </div>
@@ -493,9 +437,7 @@ function TryoutContent() {
 export default function TryoutPage() {
   return (
     <Suspense fallback={
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div className="spinner" />
-      </div>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div className="spinner" /></div>
     }>
       <TryoutContent />
     </Suspense>

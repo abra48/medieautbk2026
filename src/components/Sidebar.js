@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { useState } from 'react';
+import ThemeToggle from '@/components/ThemeToggle';
 
 // SVG Icons as components
 const icons = {
@@ -74,6 +75,7 @@ export default function Sidebar({ isAdmin = false, user }) {
 
   const adminLinks = [
     { href: '/admin/dashboard', label: 'Dashboard', icon: icons.dashboard },
+    { href: '/admin/siswa', label: 'Monitoring Siswa', icon: icons.user },
     { href: '/admin/popup', label: 'Kelola Pop-up', icon: icons.popup },
     { href: '/admin/info', label: 'Kirim Info', icon: icons.info },
     { href: '/admin/soal', label: 'Bank Soal', icon: icons.soal },
@@ -153,13 +155,16 @@ export default function Sidebar({ isAdmin = false, user }) {
 
         {/* User Section */}
         <div className="sidebar-user">
-          <div className="sidebar-user-info">
-            <div className="sidebar-user-name">
-              {user?.email || 'User'}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div className="sidebar-user-info">
+              <div className="sidebar-user-name">
+                {user?.email || 'User'}
+              </div>
+              <div className="sidebar-user-role">
+                {isAdmin ? '🔑 Admin' : '🎓 Siswa'}
+              </div>
             </div>
-            <div className="sidebar-user-role">
-              {isAdmin ? '🔑 Admin' : '🎓 Siswa'}
-            </div>
+            <ThemeToggle />
           </div>
           <button
             onClick={handleLogout}

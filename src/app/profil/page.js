@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import Sidebar from '@/components/Sidebar';
 
@@ -14,7 +14,7 @@ export default function ProfilPage() {
   const [error, setError] = useState('');
   const [skorCount, setSkorCount] = useState(0);
   const [bestScore, setBestScore] = useState(0);
-  const avatarRef = useRef(null);
+
 
   useEffect(() => { init(); }, []);
 
@@ -26,7 +26,7 @@ export default function ProfilPage() {
     const { data: adminData } = await supabase.from('admin').select('id').eq('id', session.user.id).single();
     setIsAdmin(!!adminData);
 
-    const { data: siswaData } = await supabase.from('siswa').select('*').eq('id', session.user.id).single();
+    const { data: siswaData } = await supabase.from('siswa').select('id, nama_lengkap, asal_sekolah, created_at, nisn').eq('id', session.user.id).single();
     if (siswaData) {
       setProfil(siswaData);
       setForm({ nama_lengkap: siswaData.nama_lengkap || '', nisn: siswaData.nisn || '', asal_sekolah: siswaData.asal_sekolah || '' });
@@ -50,18 +50,7 @@ export default function ProfilPage() {
     setSaving(false);
   }
 
-  async function handleAvatarUpload(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    const ext = file.name.split('.').pop();
-    const fileName = `avatar-${user.id}.${ext}`;
-    const { error: uploadErr } = await supabase.storage.from('gambar-soal').upload(fileName, file, { cacheControl: '3600', upsert: true });
-    if (uploadErr) { setError('Upload gagal: ' + uploadErr.message); return; }
-    const { data: urlData } = supabase.storage.from('gambar-soal').getPublicUrl(fileName);
-    await supabase.from('siswa').update({ avatar_url: urlData.publicUrl }).eq('id', user.id);
-    setProfil({ ...profil, avatar_url: urlData.publicUrl });
-    setSuccess('Avatar diperbarui!');
-  }
+
 
   const initials = (profil?.nama_lengkap || user?.email || '?').substring(0, 2).toUpperCase();
 
@@ -88,15 +77,9 @@ export default function ProfilPage() {
           <div className="card animate-slideUp">
             {/* Profile Header */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 24, paddingBottom: 20, borderBottom: '1px solid var(--border)' }}>
-              <div
-                className="avatar lg"
-                onClick={() => avatarRef.current?.click()}
-                style={{ cursor: 'pointer' }}
-                title="Klik untuk ganti avatar"
-              >
-                {profil?.avatar_url ? <img src={profil.avatar_url} alt="" /> : initials}
+              <div className="avatar lg">
+                {initials}
               </div>
-              <input ref={avatarRef} type="file" accept="image/*" onChange={handleAvatarUpload} style={{ display: 'none' }} />
               <div>
                 <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>{profil?.nama_lengkap || 'Belum diisi'}</div>
                 <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>{user?.email}</div>
